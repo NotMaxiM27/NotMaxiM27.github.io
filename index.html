@@ -15,7 +15,6 @@
 <script src="https://unpkg.com/three@0.139.2/examples/js/controls/OrbitControls.js"></script>
 <script src="https://unpkg.com/three@0.139.2/examples/js/controls/DragControls.js"></script>
 <script src="https://unpkg.com/three@0.139.2/examples/js/geometries/TeapotGeometry.js"></script>
-<script src="https://unpkg.com/three@0.139.2/examples/js/loaders/GLTFLoader.js"></script>
 
 <script>
 // ============================================================
@@ -65,6 +64,8 @@ class DisplaySurface {
 let renderer, scene, camera;
 let displaySurfaces, displaySurfaceScene, displaySurfaceTargets;
 let eyeCenter, eyeScene;
+let headMesh, eyeLMesh, eyeRMesh; 
+
 let orbitControl, mixer;
 let showScene = true;
 let wallAngle = Math.PI / 2;
@@ -74,7 +75,7 @@ let vrRig;
 let controllerL, controllerR;
 let lastButtonState = [false, false, false, false];
 let raycaster;
-let INTERSECTED = null;
+let INTERSECTED = null; 
 let tempMatrix = new THREE.Matrix4();
 let grabbableObjects = [];
 
@@ -84,7 +85,7 @@ const controllerGripState = {
 };
 
 // ============================================================
-// === Helper rotation functions
+// === Helper functions
 // ============================================================
 function rotatePointAroundAxis(P, B, axis, angle) {
   const v = P.clone().sub(B);
@@ -117,17 +118,19 @@ function setupXRControllers() {
 
     const lineGeom = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, -5)
+        new THREE.Vector3(0, 0, -1) 
     ]);
     const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.5, transparent: true });
-    controllerR.add(new THREE.Line(lineGeom, lineMat));
+    const line = new THREE.Line(lineGeom, lineMat);
+    line.name = 'rayLine'; 
+    line.scale.z = 1000; 
+    controllerR.add(line);
 }
 
 // ============================================================
 // === Grab and hover functions
 // ============================================================
 
-// Chiamato quando si preme il grilletto (controller destro)
 function onSelectStart(event) {
     if (INTERSECTED) {
         const objectToGrab = INTERSECTED;
@@ -151,10 +154,19 @@ function onSelectEnd(event) {
             scene.attach(grabbed);
         } else if (grabbed.name === "Head") {
             eyeScene.attach(grabbed);
+        } else if (grabbed.name === "EyeL" || grabbed.name === "EyeR") {
+            if (headMesh) {
+                headMesh.attach(grabbed);
+            } else {
+                eyeScene.attach(grabbed);
+            }
         } else {
             scene.attach(grabbed);
         }
         
+        const line = controllerR.getObjectByName('rayLine');
+        if (line) line.scale.z = 1000;
+
         controllerGripState.isGrabbing = false;
         controllerGripState.grabbedObject = null;
     }
@@ -163,22 +175,30 @@ function onSelectEnd(event) {
 function handleXRRaycaster() {
     if (!renderer.xr.isPresenting || !controllerR) return;
 
+    const line = controllerR.getObjectByName('rayLine');
+
     if (controllerGripState.isGrabbing) {
         if (INTERSECTED) {
-            INTERSECTED = null;
+             INTERSECTED = null;
         }
+        //if (line) line.scale.z = 0; 
         return;
     }
     
     tempMatrix.identity().extractRotation(controllerR.matrixWorld);
     
     raycaster.ray.origin.setFromMatrixPosition(controllerR.matrixWorld);
-    
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+    grabbableObjects.forEach(obj => obj.updateMatrixWorld(true));
 
     const intersects = raycaster.intersectObjects(grabbableObjects);
 
     if (intersects.length > 0) {
+        if (line) {
+            line.scale.z = intersects[0].distance;
+        }
+
         const newIntersected = intersects[0].object;
         
         if (INTERSECTED !== newIntersected) {
@@ -190,6 +210,10 @@ function handleXRRaycaster() {
             INTERSECTED.material.emissive.set(0x2D2D2D);
         }
     } else {
+        if (line) {
+            line.scale.z = 1000;
+        }
+
         if (INTERSECTED) {
             INTERSECTED.material.emissive.set(0x000000);
         }
@@ -208,10 +232,10 @@ function checkXRControllerButtons() {
         
         // 0:trigger, 1:grip, 4:A, 5:B
 
-        if (btns[5]) {
+        if (btns[5]) { 
           if (btns[5].pressed && !lastButtonState[i * 2]) {
             if (i === 0) {
-              dolly.position.copy(eyeScene.getObjectByName("EyeL").getWorldPosition(new THREE.Vector3()));
+                if(eyeLMesh) dolly.position.copy(eyeLMesh.getWorldPosition(new THREE.Vector3()));
             } else if (i === 1) {
               showScene = !showScene;
             }
@@ -219,10 +243,10 @@ function checkXRControllerButtons() {
           }
           if (!btns[5].pressed) lastButtonState[i * 2] = false;
         }
-        if (btns[4]) {
+        if (btns[4]) { 
           if (btns[4].pressed && !lastButtonState[i * 2 + 1]) {
             if (i === 0) {
-              dolly.position.copy(eyeScene.getObjectByName("EyeR").getWorldPosition(new THREE.Vector3()));
+                 if(eyeRMesh) dolly.position.copy(eyeRMesh.getWorldPosition(new THREE.Vector3()));
             } else if (i === 1) {
               wallAngle = Math.PI/2; updateWallAngle();
             }
@@ -230,14 +254,14 @@ function checkXRControllerButtons() {
           }
           if (!btns[4].pressed) lastButtonState[i * 2 + 1] = false;
         }
-        if (btns[1]) {
+        if (btns[1]) { 
           if (btns[1].pressed && !lastButtonState[i * 2 + 1]) {
             if (i === 0) {
-                wallAngle += angleStep;
+                wallAngle += angleStep * 0.1;
                 wallAngle = Math.min(THREE.MathUtils.degToRad(120), wallAngle);
                 updateWallAngle();
             } else if (i === 1) {
-                wallAngle -= angleStep;
+                wallAngle -= angleStep * 0.1;
                 wallAngle = Math.max(THREE.MathUtils.degToRad(60), wallAngle);
                 updateWallAngle();
                 }
@@ -249,8 +273,6 @@ function checkXRControllerButtons() {
     }
   }
 }
-
-
 
 // ============================================================
 // === Wall updates
@@ -325,21 +347,23 @@ function createEyeScene() {
 
   const headGeom = new THREE.SphereGeometry(10, 32, 22);
   const headMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa });
-  const head = new THREE.Mesh(headGeom, headMat);
-  head.name = "Head";
-  head.position.copy(eyeCenter);
-  eyeScene.add(head);
-
+  
+  headMesh = new THREE.Mesh(headGeom, headMat);
+  headMesh.name = "Head";
+  headMesh.position.copy(eyeCenter);
+  eyeScene.add(headMesh);
+  
   const eyeGeom = new THREE.SphereGeometry(3, 32, 22);
-  const eyeLMesh = new THREE.Mesh(eyeGeom, new THREE.MeshPhongMaterial({ color: 0xff0000 }));
+  
+  eyeLMesh = new THREE.Mesh(eyeGeom, new THREE.MeshPhongMaterial({ color: 0xff0000 }));
   eyeLMesh.name = "EyeL";
   eyeLMesh.position.copy(eyeL);
-  head.add(eyeLMesh);
+  headMesh.add(eyeLMesh);
 
-  const eyeRMesh = new THREE.Mesh(eyeGeom, new THREE.MeshPhongMaterial({ color: 0x0000ff }));
+  eyeRMesh = new THREE.Mesh(eyeGeom, new THREE.MeshPhongMaterial({ color: 0x0000ff }));
   eyeRMesh.name = "EyeR";
   eyeRMesh.position.copy(eyeR);
-  head.add(eyeRMesh);
+  headMesh.add(eyeRMesh);
 
   createLights(eyeScene);
 }
@@ -511,38 +535,34 @@ function enableOrbitCamera(cam) {
 
 function addDragControlToObjects() {
     const teapot = scene.getObjectByName("Teapot");
-    const head = eyeScene.getObjectByName("Head");
+    const head = headMesh; 
     const tube = scene.getObjectByName("Tube");
     
-    if (teapot) grabbableObjects.push(teapot);
-    if (head) grabbableObjects.push(head);
-    if (tube) grabbableObjects.push(tube);
-    
-    const desktopObjects = [
-        teapot, 
-        head,
-        tube,
-        eyeScene.getObjectByName("EyeL"), 
-        eyeScene.getObjectByName("EyeR")
-    ].filter(obj => obj);
+    if(teapot) grabbableObjects.push(teapot);
+    if(head) grabbableObjects.push(head);
+    if(tube) grabbableObjects.push(tube);
+    if(eyeLMesh) grabbableObjects.push(eyeLMesh);
+    if(eyeRMesh) grabbableObjects.push(eyeRMesh);
+
+    const desktopObjects = grabbableObjects.filter(obj => obj);
 
     const controls = new THREE.DragControls(desktopObjects, camera, renderer.domElement);
   controls.addEventListener('hoveron', function ( event ) 
-		{
+    {
             orbitControl.enabled = false;
             event.object.material.emissive.set( 0x2D2D2D );
         } );
   controls.addEventListener('hoveroff', function ( event ) 
-		{
+    {
             orbitControl.enabled = true;
             event.object.material.emissive.set( 0x000000 );
         } );
   controls.addEventListener( 'dragstart', function ( event ) 
-		{
+    {
             event.object.material.emissive.set( 0xaaaaaa );
         } );
     controls.addEventListener( 'dragend', function ( event ) 
-		{
+    {
             if(orbitControl.enabled == false)
                 event.object.material.emissive.set( 0x2D2D2D );
             else
@@ -585,59 +605,71 @@ function animate() {
   const wasXREnabled = renderer.xr.enabled;
   renderer.xr.enabled = false;
 
+  if (headMesh) headMesh.visible = false;
+  if (eyeLMesh) eyeLMesh.visible = false;
+  if (eyeRMesh) eyeRMesh.visible = false;
+
+  const rayLine = controllerR ? controllerR.getObjectByName('rayLine') : null;
+  if (rayLine) rayLine.visible = false;
+
   for (let [i, surf] of displaySurfaces.entries()) {
     renderer.setRenderTarget(displaySurfaceTargets[i]);
     renderer.setClearColor(0x404040);
     renderer.clear();
 
     gl.colorMask(1, 0, 0, 0);
-    let eyeL = eyeScene.getObjectByName("EyeL").getWorldPosition(new THREE.Vector3());
+    let eyeL = eyeLMesh ? eyeLMesh.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
     let viewL = surf.viewMatrix(eyeL);
     let projL = surf.projectionMatrix(eyeL, 1, 1000);
     let camL = cameraFromViewProj(viewL, projL);
     renderer.render(scene, camL);
 
     gl.colorMask(0, 1, 1, 0);
-    let eyeR = eyeScene.getObjectByName("EyeR").getWorldPosition(new THREE.Vector3());
+    let eyeR = eyeRMesh ? eyeRMesh.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3();
     let viewR = surf.viewMatrix(eyeR);
     let projR = surf.projectionMatrix(eyeR, 1, 1000);
     let camR = cameraFromViewProj(viewR, projR);
     renderer.clearDepth();
     renderer.render(scene, camR);
     gl.colorMask(1, 1, 1, 0);
-}
+  }
 
-renderer.xr.enabled = wasXREnabled;
+  if (headMesh) headMesh.visible = true;
+  if (eyeLMesh) eyeLMesh.visible = true;
+  if (eyeRMesh) eyeRMesh.visible = true;
+  if (rayLine) rayLine.visible = true;
 
-if (xrSession) {
-  const ROTATE_SPEED = 0.05;
-  const ZOOM_SPEED = 0.05;
-  const PAN_SPEED = 0.05;
+  renderer.xr.enabled = wasXREnabled;
 
-  if (controllerL && controllerL.userData && controllerL.userData.gamepad) {
-    const gp = controllerL.userData.gamepad;
-    let axes = gp.axes;
-    if (Math.abs(axes[2]) > 0.1) {
-      dolly.position.x += axes[2] * PAN_SPEED * 10;
+  if (xrSession) {
+    const ROTATE_SPEED = 0.05;
+    const ZOOM_SPEED = 0.05;
+    const PAN_SPEED = 0.05;
+
+    if (controllerL && controllerL.userData && controllerL.userData.gamepad) {
+      const gp = controllerL.userData.gamepad;
+      let axes = gp.axes;
+      if (Math.abs(axes[2]) > 0.1) {
+        dolly.position.x += axes[2] * PAN_SPEED * 10;
+      }
+      if (Math.abs(axes[3]) > 0.1) {
+        dolly.position.y -= axes[3] * PAN_SPEED * 10;
+      }
     }
-    if (Math.abs(axes[3]) > 0.1) {
-      dolly.position.y -= axes[3] * PAN_SPEED * 10;
+    if (controllerR && controllerR.userData && controllerR.userData.gamepad) {
+      const gp = controllerR.userData.gamepad;
+      let axes = gp.axes;
+      if (Math.abs(axes[3]) > 0.1) {
+        dolly.position.z += axes[3] * ZOOM_SPEED * 20;
+      }
     }
   }
-  if (controllerR && controllerR.userData && controllerR.userData.gamepad) {
-    const gp = controllerR.userData.gamepad;
-    let axes = gp.axes;
-    if (Math.abs(axes[3]) > 0.1) {
-      dolly.position.z += axes[3] * ZOOM_SPEED * 20;
-    }
-  }
-}
 
 
-renderer.setRenderTarget(null);
-renderer.setClearColor(0x000000);
-renderer.render(displaySurfaceScene, camera);
-renderer.render(eyeScene, camera);
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(0x000000);
+  renderer.render(displaySurfaceScene, camera);
+  renderer.render(eyeScene, camera);
 }
 
 // ============================================================
@@ -672,11 +704,11 @@ renderer.setAnimationLoop(animate);
 // ============================================================
 window.addEventListener('keydown', e => {
   switch(e.code) {
-    case 'KeyL': camera.position.copy(eyeScene.getObjectByName("EyeL").getWorldPosition(new THREE.Vector3())); break;
-    case 'KeyR': camera.position.copy(eyeScene.getObjectByName("EyeR").getWorldPosition(new THREE.Vector3())); break;
+    case 'KeyL': if(eyeLMesh) camera.position.copy(eyeLMesh.getWorldPosition(new THREE.Vector3())); break;
+    case 'KeyR': if(eyeRMesh) camera.position.copy(eyeRMesh.getWorldPosition(new THREE.Vector3())); break;
     case 'KeyS': showScene = !showScene; break;
-    case 'KeyT':
-        var viewF = displaySurfaces[0].viewMatrix(new THREE.Vector3(50,20,100));
+    case 'KeyT': 
+          var viewF = displaySurfaces[0].viewMatrix(new THREE.Vector3(50,20,100));
 		var viewL = displaySurfaces[1].viewMatrix(new THREE.Vector3(50,20,100));
 		var viewR = displaySurfaces[2].viewMatrix(new THREE.Vector3(50,20,100));
 		var viewB = displaySurfaces[3].viewMatrix(new THREE.Vector3(50,20,100));
